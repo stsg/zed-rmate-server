@@ -130,7 +130,7 @@ impl TmpFile {
         }
 
         Command::new(zed_bin)
-            .args(args)
+            // .args(args)
             .args(paths)
             .stdout(Stdio::piped())
             .spawn()
@@ -239,6 +239,7 @@ async fn handle_connection(stream: TcpStream, zed_bin: PathBuf) -> Result<(), st
                             }
                         }
                     }
+
                     _ => {
                         // ignore
                     }
