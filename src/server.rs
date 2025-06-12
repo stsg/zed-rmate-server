@@ -8,7 +8,6 @@ use std::{
     path::{Path, PathBuf},
     time::SystemTime,
 };
-
 use tokio::{
     fs::File,
     io::{AsyncBufRead, AsyncWrite, AsyncWriteExt, BufReader},
@@ -18,12 +17,11 @@ use tokio::{
 };
 
 use notify::{
-    event::{DataChange, EventKind, ModifyKind},
+    event::{DataChange, EventKind, ModifyKind, AccessKind, AccessMode},
     Event, RecursiveMode, Watcher,
 };
 
 use async_process::{Child, Command, Stdio};
-
 use tempfile::{tempdir, TempDir};
 
 use crate::protocol::*;
@@ -119,7 +117,7 @@ impl TmpFile {
     }
 
     /// Spawn Zed by calling the CLI with some options and a list of file paths.
-    fn spawn_zed(zed_bin: &Path, files: &[TmpFile]) -> Result<Child, std::io::Error> {
+    fn spawn_zed(zed_bin: &Path, files: &[TmpFile], neovide: bool) -> Result<Child, std::io::Error> {
         let arg_new = files.iter().any(|r| r.remote_file.new);
 
         let paths = files.iter().map(|r| r.tmp_file_path_with_selection());
@@ -128,12 +126,19 @@ impl TmpFile {
         if arg_new {
             args.push("--new");
         }
-
-        Command::new(zed_bin)
-            // .args(args)
-            .args(paths)
-            .stdout(Stdio::piped())
-            .spawn()
+        if neovide {
+            Command::new(zed_bin)
+                .args(paths)
+                .stdout(Stdio::piped())
+                .spawn()
+            
+        } else {
+            Command::new(zed_bin)
+                .args(args)
+                .args(paths)
+                .stdout(Stdio::piped())
+                .spawn()
+        }
     }
 
     /// Send a local tmp file to the rmate stream.
@@ -158,6 +163,7 @@ impl TmpFile {
 pub(crate) async fn serve(
     bind: String,
     zed_bin: PathBuf,
+    neovide: bool,
     once: bool,
 ) -> Result<(), Box<dyn Error>> {
     // Bind a TCP listener
@@ -171,10 +177,10 @@ pub(crate) async fn serve(
         info!("Got rmate connection from {addr:#?}");
 
         if once {
-            handle_connection(stream, zed_bin.clone()).await?;
+            handle_connection(stream, zed_bin.clone(), neovide).await?;
             break Ok(()); // accept a single connection then terminate
         } else {
-            tokio::spawn(handle_connection(stream, zed_bin.clone()));
+            tokio::spawn(handle_connection(stream, zed_bin.clone(), neovide));
         }
     }
 }
@@ -187,7 +193,7 @@ pub(crate) async fn serve(
 /// - Open the tmp file in Zed
 /// - Watch the tmp file for changes and send the file to the connection
 /// - On Zed close or remote connection close remove the tmp file
-async fn handle_connection(stream: TcpStream, zed_bin: PathBuf) -> Result<(), std::io::Error> {
+async fn handle_connection(stream: TcpStream, zed_bin: PathBuf, neovide: bool) -> Result<(), std::io::Error> {
     // Send server identification
     let mut conn = RmateConnection::new(BufReader::new(stream)).await?;
 
@@ -216,7 +222,7 @@ async fn handle_connection(stream: TcpStream, zed_bin: PathBuf) -> Result<(), st
 
     // Open the tmp files in Zed
     info!("Opening Zed");
-    let mut zed = TmpFile::spawn_zed(&zed_bin, &files)?;
+    let mut zed = TmpFile::spawn_zed(&zed_bin, &files, neovide)?;
 
     loop {
         tokio::select! {
@@ -224,6 +230,14 @@ async fn handle_connection(stream: TcpStream, zed_bin: PathBuf) -> Result<(), st
                 // We are only interested in content change and file remove events
                 match event {
                     Some(Event {kind: EventKind::Modify(ModifyKind::Data(DataChange::Content)), paths, .. }) => {
+                        for p in paths {
+                            if let Some(file) = files.iter_mut().find(|f| { f.file_path == *p }) {
+                                info!("File {:?} changed", file.remote_file.display_name);
+                                file.send_file(&mut conn).await?;
+                            }
+                        }
+                    }
+                    Some(Event {kind: EventKind::Access(AccessKind::Close(AccessMode::Write)), paths, .. }) => {
                         for p in paths {
                             if let Some(file) = files.iter_mut().find(|f| { f.file_path == *p }) {
                                 info!("File {:?} changed", file.remote_file.display_name);
@@ -239,7 +253,6 @@ async fn handle_connection(stream: TcpStream, zed_bin: PathBuf) -> Result<(), st
                             }
                         }
                     }
-
                     _ => {
                         // ignore
                     }

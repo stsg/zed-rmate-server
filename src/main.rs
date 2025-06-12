@@ -22,6 +22,10 @@ struct Args {
     /// Sets the executable path for the Zed CLI binary
     #[arg(short, long, env = "ZED_BIN", default_value = "/usr/local/bin/zed")]
     zed_bin: PathBuf,
+    
+    /// Flag for Neovide
+    #[arg(short, long, env = "ZED_NEOVIDE")]
+    neovide: bool,
 
     /// Sets a custom rmate server address
     #[arg(short, long, env = "RMATE_BIND", default_value = "127.0.0.1:52698")]
@@ -51,7 +55,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     dotenv().ok();
     let args = Args::parse();
 
-    server::serve(args.bind, args.zed_bin, args.once).await?;
+    server::serve(args.bind, args.zed_bin, args.neovide, args.once).await?;
 
     Ok(())
 }
